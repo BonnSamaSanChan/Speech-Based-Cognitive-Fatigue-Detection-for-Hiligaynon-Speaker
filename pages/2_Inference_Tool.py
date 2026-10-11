@@ -1,6 +1,7 @@
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
 from src.audio_processor import extract_mel_spectrogram
 from src.database import fetch_all_sessions
 
@@ -65,7 +66,8 @@ mel_spectrogram = None
 if uploaded_audio is not None:
     st.audio(uploaded_audio)
     try:
-        mel_spectrogram = extract_mel_spectrogram(uploaded_audio)
+        with st.spinner("Processing audio and extracting Mel-spectrogram..."):
+            mel_spectrogram = extract_mel_spectrogram(uploaded_audio)
     except Exception as exc:
         st.error(f"Audio processing failed: {exc}")
 
@@ -97,23 +99,27 @@ with right:
     st.info("Prediction and attention analysis are unavailable because a trained model is not connected yet.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-st.subheader("Live Session Database")
-st.caption("Synchronized with Supabase `fatigue_session` table.")
+st.subheader("Live session table")
 
+session_df = pd.DataFrame(columns=["session_id", "respondent_id", "task_level", "ground_truth_score", "predicted_fatigue", "audio_storage_url"])
 try:
-    session_df = fetch_all_sessions()
+    with st.spinner("Loading live session records..."):
+        fetched_sessions = fetch_all_sessions()
+    if fetched_sessions.empty:
+        st.info("No participant sessions have been logged yet. Once a participant completes a task, their session row will appear here.")
+    else:
+        session_df = fetched_sessions.copy()
 except Exception as exc:
-    st.error(f"Failed to fetch session records: {exc}")
-    session_df = pd.DataFrame()
+    st.info("Live session data is unavailable until the Supabase credentials are configured. Once the database is connected, this table will populate automatically.")
+    st.caption(f"Connection status: {exc}")
 
-if session_df.empty:
-    st.info("No participant sessions logged yet.")
-else:
-    st.dataframe(session_df, use_container_width=True)
-    csv = session_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="Download dataset (.CSV)",
-        data=csv,
-        file_name="fatigue_session_logs.csv",
-        mime="text/csv",
-    )
+st.dataframe(session_df, use_container_width=True)
+
+csv = session_df.to_csv(index=False).encode("utf-8")
+st.download_button(
+    label="Download dataset (.CSV)",
+    data=csv,
+    file_name="fatigue_session_logs.csv",
+    mime="text/csv",
+    disabled=session_df.empty,
+)

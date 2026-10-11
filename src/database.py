@@ -5,7 +5,9 @@ Supabase client initialization, storage ingestion, and session logging
 for the Hiligaynon speech-based cognitive fatigue detection study.
 """
 
+import uuid
 from typing import Optional
+
 import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
@@ -81,3 +83,48 @@ def fetch_all_sessions() -> pd.DataFrame:
     supabase = get_supabase_client()
     response = supabase.table("fatigue_session").select("*").execute()
     return pd.DataFrame(response.data)
+
+
+def purge_session_state(session_state, destination_step: int = 0):
+    """Clear staged participant data and reset session-scoped state for a fresh run."""
+    session_id = session_state.get("session_id")
+    session_key_prefixes = (
+        "participant_audio_",
+        "fatigue_rating_",
+        "post_debrief_choice_",
+        "language_selector_",
+        "consent_check_",
+        "birthplace_scope_",
+        "birthplace_province_",
+        "birthplace_locality_",
+        "birthplace_manual_",
+        "native_language_",
+        "frequency_score_",
+    )
+
+    for key in list(session_state):
+        if isinstance(key, str) and session_id and session_id in key and key.startswith(session_key_prefixes):
+            del session_state[key]
+
+    session_state["task_recordings"] = {}
+    session_state["task_ratings"] = {}
+    session_state["recorded_audio_bytes"] = None
+    session_state["inference_results"] = {}
+    session_state["respondent_id"] = f"WVSU-{uuid.uuid4().hex}"
+    session_state["birthplace"] = ""
+    session_state["birthplace_manual_text"] = ""
+    session_state["birthplace_scope"] = "western_visayas"
+    session_state["birthplace_province_code"] = "063000000"
+    session_state["birthplace_needs_review"] = False
+    session_state["native_language"] = None
+    session_state["hiligaynon_frequency_score"] = 3
+    session_state["samn_perelli_rating"] = None
+    session_state["current_task_level"] = "Easy"
+    session_state["task_index"] = 0
+    session_state["screening_errors"] = []
+    session_state["consent_accepted"] = False
+    session_state["post_debrief_choice"] = None
+    session_state["post_debrief_consent"] = False
+    session_state["session_id"] = str(uuid.uuid4())
+    session_state["current_step"] = destination_step
+    return session_state

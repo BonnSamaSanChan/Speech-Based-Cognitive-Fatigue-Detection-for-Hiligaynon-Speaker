@@ -1,14 +1,11 @@
-from pyexpat import errors
-
-from src.audio_processor import standardize_audio
-from src.database import log_session, save_respondent, upload_audio_blob
-
 import json
 import uuid
 from urllib.error import URLError
 from urllib.request import urlopen
 
 import streamlit as st
+
+from src.database import purge_session_state
 
 st.set_page_config(page_title="Participant Data Collection", layout="wide")
 
@@ -25,6 +22,32 @@ st.markdown(
             border-radius: 18px;
             padding: 1.5rem;
             box-shadow: 0 12px 24px rgba(15, 23, 42, 0.04);
+        }
+        .study-banner {
+            background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+            border: 1px solid rgba(37, 99, 235, 0.18);
+            border-left: 5px solid #2563EB;
+            border-radius: 16px;
+            padding: 1rem 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .study-banner-tag {
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: #1D4ED8;
+        }
+        .study-banner-title {
+            font-size: 1.45rem;
+            font-weight: 700;
+            color: #0F172A;
+            margin-top: 0.35rem;
+        }
+        .study-banner-subtitle {
+            font-size: 0.95rem;
+            color: #475569;
+            margin-top: 0.2rem;
         }
         .metric-card {
             background: linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
@@ -88,7 +111,6 @@ DEFAULTS = {
     "inference_results": {},
     "consent_accepted": False,
     "post_debrief_consent": False,
-    "post_debrief_choice": None,
     "post_debrief_choice": None,
     "birthplace": "",
     "birthplace_scope": "western_visayas",
@@ -186,9 +208,9 @@ UI_TEXT = {
         "step_task": "Step 3 · Cognitive Tasks",
         "task_level": "Select task level",
         "task_names": {"Easy": "Easy", "Moderate": "Moderate", "Intensive": "Intensive"},
-        "task_instructions": "Read the prompt and answer aloud. Explain your reasoning as you work.",
-        "prompt_label": "Prompt",
-        "draft_notice": "Prompt wording and difficulty progression are drafts; confirm them against the approved thesis protocol before participant recruitment.",
+        "task_instructions": "Read each question and answer every question aloud while recording. Upload one audio file containing all responses for this part.",
+        "prompt_label": "Question",
+        "draft_notice": "Question wording and difficulty progression are drafts; confirm them against the approved thesis protocol before participant recruitment.",
         "upload": "Upload or record speech audio",
         "upload_help": "Accepted formats: WAV, MP3, M4A, and OGG.",
         "audio_ready": "Audio is ready for this task.",
@@ -224,7 +246,7 @@ UI_TEXT = {
         "step_task": "Lakang 3 · Mga Buluhaton sa Panghunahuna",
         "task_level": "Pilia ang kabudlayon sang buluhaton",
         "task_names": {"Easy": "Mahapos", "Moderate": "Katamtaman", "Intensive": "Mabudlay"},
-        "task_instructions": "Basaha ang pamangkot kag sabta ini paagi sa paghambal. Ipaathag ang imo panghunahuna samtang nagasabat.",
+        "task_instructions": "Basaha ang kada pamangkot kag sabta ini sing matunog samtang nagarekord. I-upload ang isa ka audio file nga may tanan mo nga sabat sa sini nga bahin.",
         "prompt_label": "Pamangkot",
         "draft_notice": "Draft pa ang mga pulong kag kabudlayon sang buluhaton; ipasibu ini sa gin-aprubahan nga thesis protocol antes mag-recruit sang partisipante.",
         "upload": "Mag-upload ukon magrekord sang audio sang paghambal",
@@ -274,7 +296,7 @@ FLOW_TEXT = {
         "consent_next": "Agree and continue",
         "consent_notice": "The Hiligaynon translation is a draft. Have a fluent speaker and the approving ethics committee review it before recruitment.",
         "progress": ["Language", "Consent", "Screening", "Tasks", "Debrief"],
-        "task_order": "Task {number} of 3 · {task}",
+        "task_order": "Part {part} · Task {number} of 3 · {task}",
         "task_complete": "Recording ready. You will rate fatigue immediately after this task.",
         "recording_present": "Uploaded",
         "recording_missing": "Not uploaded",
@@ -310,7 +332,7 @@ FLOW_TEXT = {
         "consent_next": "Nagauyon ako kag magapadayon",
         "consent_notice": "Draft pa ang Hiligaynon nga hubad. Ipasusi ini sa maayo maghambal sang Hiligaynon kag sa ethics committee antes mag-recruit.",
         "progress": ["Lenguahe", "Consent", "Screening", "Mga Buluhaton", "Pagpaathag"],
-        "task_order": "Buluhaton {number} sa 3 · {task}",
+        "task_order": "Part {part} · Buluhaton {number} sa 3 · {task}",
         "task_complete": "Andam na ang recording. Markahi ang kakapoy pagkatapos gid sini nga buluhaton.",
         "recording_present": "Na-upload",
         "recording_missing": "Wala na-upload",
@@ -360,16 +382,72 @@ CONSENT_TEXT = {
 }
 TASK_PROMPTS = {
     "Easy": {
-        "hiligaynon": "Basaha sing matunog: 'Sa kaagahon, nagkadto si Lina sa merkado agod magbakal sang prutas para sa iya pamilya. Pag-abot sa balay, iya ginbahin ang prutas sa ila tanan.' Isaysay sa imo kaugalingon nga mga pulong kon ano ang ginhimo ni Lina kag ngaa.",
-        "english": "Read aloud: 'In the morning, Lina went to the market to buy fruit for her family. When she arrived home, she shared the fruit with everyone.' Retell in your own words what Lina did and why.",
+        "hiligaynon": [
+            "Diin ka natawo kag diin ka nagdaku?",
+            "Ano ang ginakuha mo nga kurso?",
+            "Ano ang paborito mo nga pagkaon kag ngaa?",
+            "Ano ang imo ginahimo kon may libre ka nga oras?",
+            "Sin-o ang imo permi ginakaupod sa eskwelahan?",
+            "Ano ang paborito mo nga subject?",
+            "I-describe ang imo kaugalingon sa tatlo ka pulong.",
+            "Ipaathag kon ano ang kasagarang adlaw mo sa eskwelahan.",
+        ],
+        "english": [
+            "Where were you born, and where did you grow up?",
+            "What course or program are you studying?",
+            "What is your favorite food, and why?",
+            "What do you usually do in your free time?",
+            "Who do you usually spend time with at school?",
+            "What is your favorite subject?",
+            "Describe yourself in three words.",
+            "Describe a typical day for you at school.",
+        ],
     },
     "Moderate": {
-        "hiligaynon": "May 4 ka kaumpok sang lapis, kag may 6 ka lapis sa kada kaumpok. Ginhatagan mo ang 5 mo ka estudyante sing pareho nga kadamuon. Pila ka lapis ang mabaton sang kada estudyante? Ipaathag sing matunog ang kada tikang sang imo pagsolbar.",
-        "english": "There are 4 bundles of pencils with 6 pencils in each bundle. You share them equally among 5 students. How many pencils does each student get? Explain each step of your reasoning aloud.",
+        "hiligaynon": [
+            "Ano ang sabat sang 12 + 15? Ipaathag kon paano mo ini ginkwenta.",
+            "Ano ang sabat sang 45 - 19? Ipaathag ang imo pagsolbar.",
+            "Ano ang sabat sang 8 x 7? Ipaathag ang imo pagsolbar.",
+            "Ano ang sabat sang 64 / 8? Ipaathag ang imo pagsolbar.",
+            "Ngaa importante ang edukasyon para sa imo?",
+            "Ipaathag kon paano ka nagahanda para sa exam.",
+            "Ano ang imo ginahimo kon may problema ka sa pagtuon?",
+            "Ano ang imo himuon kon may duha ka assignment kag isa lang ka oras?",
+            "Ipaathag kon paano ka magdesisyon kon may problema.",
+        ],
+        "english": [
+            "What is 12 + 15? Explain how you worked it out.",
+            "What is 45 - 19? Explain how you solved it.",
+            "What is 8 x 7? Explain how you solved it.",
+            "What is 64 / 8? Explain how you solved it.",
+            "Why is education important to you?",
+            "Explain how you prepare for an exam.",
+            "What do you do when you have difficulty studying?",
+            "What would you do if you had two assignments and only one hour?",
+            "Explain how you make a decision when you face a problem.",
+        ],
     },
     "Intensive": {
-        "hiligaynon": "Mag-ihap paatras halin sa 30 tubtob sa 1. Dayon, sabta ini: May 48 ka lapis nga ginpanagtag sing patas sa 6 ka estudyante. Ang kada estudyante naghatag liwat sang 2 ka lapis sa iya abyan. Pila ka lapis ang nabilin sa kada estudyante? Ipaathag sing matunog ang kada tikang sang imo panghunahuna.",
-        "english": "Count backward from 30 to 1. Then solve: 48 pencils are shared equally among 6 students. Each student then gives 2 pencils to a friend. How many pencils does each student have left? Explain each step of your reasoning aloud.",
+        "hiligaynon": [
+            "Paano mo masolbar ang 25 x 18? Ipaathag ang mga tikang.",
+            "Kon may PhP 500 ka, paano mo ini i-budget para sa isa ka semana?",
+            "Kon may tatlo ka ka-deadline sa isa ka adlaw, paano mo ini i-manage?",
+            "Ipaathag ang proseso sang paghimo sang project halin sa umpisa tubtob matapos.",
+            "Ano ang mahimo matabo kon indi ka magtuon para sa exam? Ipaathag ang imo pag-analisar.",
+            "Ihambal ang kinatuhayan sang maayo nga estudyante kag sang estudyante nga wala nagapanikasog.",
+            "Kon ikaw ang teacher, paano mo tudluan ang estudyante nga budlay makaintindi?",
+            "Ngaa importante ang critical thinking para sa estudyante?",
+        ],
+        "english": [
+            "How would you solve 25 x 18? Explain each step.",
+            "If you had PhP 500, how would you budget it for one week?",
+            "If you had three deadlines on the same day, how would you manage them?",
+            "Explain the steps for completing a project from beginning to end.",
+            "What could happen if you did not study for an exam? Analyze the situation.",
+            "Compare a diligent student with a student who does not make an effort.",
+            "If you were a teacher, how would you teach a student who has difficulty understanding?",
+            "Why is critical thinking important for a student?",
+        ],
     },
 }
 
@@ -534,18 +612,6 @@ def submit_screening():
 
     st.session_state.screening_errors = errors
     if not errors:
-        # --- Save Respondent to Supabase ---
-        try:
-            save_respondent(
-                respondent_id=st.session_state.respondent_id,
-                birthplace=birthplace,
-                native_lang=native_language,
-                freq_score=st.session_state.hiligaynon_frequency_score,
-            )
-        except Exception as exc:
-            st.session_state.screening_errors = [f"Database connection error: {exc}"]
-            return
-
         st.session_state.current_task_level = TASK_LEVELS[0]
         st.session_state.task_index = 0
         st.session_state.recorded_audio_bytes = None
@@ -585,48 +651,18 @@ def save_rating_and_continue():
     task_level = TASK_LEVELS[st.session_state.task_index]
     if task_level not in st.session_state.task_ratings:
         return
-
     if st.session_state.task_index < len(TASK_LEVELS) - 1:
         st.session_state.task_index += 1
         st.session_state.current_task_level = TASK_LEVELS[st.session_state.task_index]
-        st.session_state.recorded_audio_bytes = st.session_state.task_recordings.get(
-            st.session_state.current_task_level
-        )
+        st.session_state.recorded_audio_bytes = st.session_state.task_recordings.get(st.session_state.current_task_level)
         st.session_state.current_step = 3
     else:
-        # --- Upload all recordings and log sessions before Step 5 ---
-        with st.spinner("Standardizing audio and uploading session data..."):
-            for level in TASK_LEVELS:
-                raw_audio = st.session_state.task_recordings.get(level)
-                rating = st.session_state.task_ratings.get(level)
-
-                if raw_audio is not None and rating is not None:
-                    try:
-                        # 1. Standardize in-memory to 16 kHz mono WAV
-                        wav_bytes = standardize_audio(raw_audio)
-
-                        # 2. Upload blob to Supabase Storage
-                        filename = f"{st.session_state.respondent_id}_{level}_{st.session_state.session_id}.wav"
-                        audio_url = upload_audio_blob(wav_bytes, filename)
-
-                        # 3. Insert record into fatigue_session table
-                        log_session(
-                            respondent_id=st.session_state.respondent_id,
-                            task_level=level,
-                            ground_truth=rating,
-                            predicted=None,
-                            audio_url=audio_url,
-                            session_id=st.session_state.session_id,
-                        )
-                    except Exception as exc:
-                        st.error(f"Failed to sync task '{level}': {exc}")
-                        return
-
         st.session_state.current_step = 5
+
 
 def finish_debrief():
     if st.session_state.post_debrief_choice == "decline":
-        clear_participant_data(8)
+        purge_session_state(st.session_state, destination_step=8)
     elif st.session_state.post_debrief_choice == "agree":
         st.session_state.current_step = 6
 
@@ -656,11 +692,24 @@ def clear_participant_data(destination_step):
 
 
 def withdraw_session():
-    clear_participant_data(7)
+    purge_session_state(st.session_state, destination_step=7)
 
 
 def persist_post_debrief_choice():
     st.session_state.post_debrief_choice = st.session_state[f"post_debrief_choice_{st.session_state.session_id}"]
+
+
+def render_study_banner(title, subtitle):
+    st.markdown(
+        f"""
+        <div class="study-banner">
+            <div class="study-banner-tag">Study workflow</div>
+            <div class="study-banner-title">{title}</div>
+            <div class="study-banner-subtitle">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_progress(text):
@@ -682,7 +731,7 @@ def render_progress(text):
 
 
 def render_language_step(text):
-    st.header(text["app_title"])
+    render_study_banner(text["app_title"], text["language_intro"])
     st.subheader(text["language_title"])
     st.write(text["language_intro"])
     language_key = f"language_selector_{st.session_state.session_id}"
@@ -699,7 +748,7 @@ def render_language_step(text):
 
 def render_consent_step(text):
     consent_text = CONSENT_TEXT[st.session_state.language]
-    st.header(text["consent_title"])
+    render_study_banner(text["consent_title"], consent_text["purpose"][:110] + ("..." if len(consent_text["purpose"]) > 110 else ""))
     render_progress(text)
     st.subheader(consent_text["purpose_title"])
     st.write(consent_text["purpose"])
@@ -727,8 +776,7 @@ def render_consent_step(text):
 def render_screening_step():
     language = st.session_state.language
     text = SCREENING_TEXT[language]
-    st.header(text["step"])
-    st.write(text["intro"])
+    render_study_banner(text["step"], text["intro"])
     render_progress(FLOW_TEXT[language])
     session_id = st.session_state.session_id
     language_key = f"language_selector_{session_id}"
@@ -813,24 +861,42 @@ def render_screening_step():
         key=native_key,
         on_change=persist_native_language,
     )
-    st.markdown(f"**{text['frequency_anchor']}**")
-    frequency_columns = st.columns(5)
-    for index, column in enumerate(frequency_columns):
-        with column:
-            st.markdown(f"**● {index + 1}**")
-            st.caption(FLOW_TEXT[language]["frequency_values"][index])
+    st.markdown("### Hiligaynon")
     frequency_key = f"frequency_score_{session_id}"
-    st.slider(
-        text["frequency"],
-        min_value=1,
-        max_value=5,
-        step=1,
-        value=st.session_state.hiligaynon_frequency_score,
-        key=frequency_key,
-        on_change=lambda: st.session_state.update(hiligaynon_frequency_score=st.session_state[frequency_key]),
-    )
     frequency = st.session_state.hiligaynon_frequency_score
-    st.caption(text["frequency_selected"].format(value=frequency, anchor=FLOW_TEXT[language]["frequency_values"][frequency - 1]))
+    st.markdown(
+        f"""
+        <div style="
+            font-size:1.05rem;
+            font-weight:600;
+            color:#0f172a;
+            margin-bottom:0.8rem;
+        ">
+            {text['frequency']}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    frequency_labels = FLOW_TEXT[language]["frequency_values"]
+    frequency_options = {
+        1: frequency_labels[0],
+        2: frequency_labels[1],
+        3: frequency_labels[2],
+        4: frequency_labels[3],
+        5: frequency_labels[4],
+    }
+
+    selected_frequency = st.radio(
+        "Select one:",
+        options=list(frequency_options),
+        format_func=lambda value: f"{value} — {frequency_options[value]}",
+        index=int(frequency if frequency in [1, 2, 3, 4, 5] else 3) - 1,
+        key=f"{frequency_key}_radio",
+        horizontal=True,
+    )
+    st.session_state.hiligaynon_frequency_score = selected_frequency
+    st.session_state[frequency_key] = selected_frequency
+    st.caption(text["frequency_selected"].format(value=selected_frequency, anchor=frequency_labels[selected_frequency - 1]))
 
     for error in st.session_state.screening_errors:
         st.error(error)
@@ -854,12 +920,20 @@ def render_task_step():
     screening = SCREENING_TEXT[language]
     flow = FLOW_TEXT[language]
     task_level = TASK_LEVELS[st.session_state.task_index]
-    st.header(text["step_task"])
+    render_study_banner(text["step_task"], f"{flow['task_order'].format(part=chr(ord('A') + st.session_state.task_index), number=st.session_state.task_index + 1, task=text['task_names'][task_level])}")
     render_progress(flow)
-    st.caption(flow["task_order"].format(number=st.session_state.task_index + 1, task=text["task_names"][task_level]))
+    part_letter = chr(ord("A") + st.session_state.task_index)
+    st.caption(
+        flow["task_order"].format(
+            part=part_letter,
+            number=st.session_state.task_index + 1,
+            task=text["task_names"][task_level],
+        )
+    )
     prompt = TASK_PROMPTS[task_level]
     st.info(text["task_instructions"])
-    st.markdown(f"**{text['prompt_label']}:** {prompt[language.lower()]}")
+    for question_number, question in enumerate(prompt[language.lower()], start=1):
+        st.markdown(f"**{text['prompt_label']} {question_number}:** {question}")
     st.caption(text["draft_notice"])
 
     audio_key = f"participant_audio_{st.session_state.session_id}_{task_level}"
@@ -899,7 +973,7 @@ def render_rating_step():
     screening = SCREENING_TEXT[language]
     flow = FLOW_TEXT[language]
     task_level = TASK_LEVELS[st.session_state.task_index]
-    st.header(text["step_rating"])
+    render_study_banner(text["step_rating"], text["rating_intro"])
     render_progress(flow)
     st.caption(flow["rating_order"].format(number=st.session_state.task_index + 1))
     st.write(text["rating_intro"])
@@ -933,7 +1007,7 @@ def render_debriefing_step():
     language = st.session_state.language
     text = UI_TEXT[language]
     flow = FLOW_TEXT[language]
-    st.header(text["step_debrief"])
+    render_study_banner(text["step_debrief"], text["thanks"])
     render_progress(flow)
     st.success(text["thanks"])
     st.subheader(text["disclosure_title"])
