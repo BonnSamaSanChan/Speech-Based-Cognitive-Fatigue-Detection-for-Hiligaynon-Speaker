@@ -134,7 +134,7 @@ def delete_participant_data(respondent_id: str) -> bool:
     except Exception as e:
         st.error(f"Failed to purge data for participant {respondent_id}: {e}")
         return False
-
+        
 
 def purge_session_state(session_state, destination_step: int = 0):
     """Clear staged participant data and reset session-scoped state for a fresh run."""
