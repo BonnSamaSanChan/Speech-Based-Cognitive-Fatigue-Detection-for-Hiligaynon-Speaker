@@ -76,7 +76,25 @@ def log_session(
     if session_id:
         data["session_id"] = session_id
 
-    return supabase.table("fatigue_session").insert(data).execute()
+    table = supabase.table("fatigue_session")
+    if session_id:
+        existing = (
+            table.select("session_id")
+            .eq("session_id", session_id)
+            .eq("respondent_id", respondent_id)
+            .eq("task_level", task_level)
+            .execute()
+        )
+        if existing.data:
+            return (
+                table.update(data)
+                .eq("session_id", session_id)
+                .eq("respondent_id", respondent_id)
+                .eq("task_level", task_level)
+                .execute()
+            )
+
+    return table.insert(data).execute()
 
 
 def fetch_all_sessions() -> pd.DataFrame:
@@ -146,8 +164,10 @@ def purge_session_state(session_state, destination_step: int = 0):
 
     session_state["task_recordings"] = {}
     session_state["task_ratings"] = {}
+    session_state["ingested_tasks"] = {}
     session_state["recorded_audio_bytes"] = None
     session_state["inference_results"] = {}
+    session_state["persistence_error"] = None
     session_state["respondent_id"] = f"WVSU-{uuid.uuid4().hex}"
     session_state["birthplace"] = ""
     session_state["birthplace_manual_text"] = ""
@@ -163,6 +183,8 @@ def purge_session_state(session_state, destination_step: int = 0):
     session_state["consent_accepted"] = False
     session_state["post_debrief_choice"] = None
     session_state["post_debrief_consent"] = False
+    session_state["pending_cloud_purge"] = None
+    session_state["cloud_purge_error"] = None
     session_state["session_id"] = str(uuid.uuid4())
     session_state["current_step"] = destination_step
     return session_state

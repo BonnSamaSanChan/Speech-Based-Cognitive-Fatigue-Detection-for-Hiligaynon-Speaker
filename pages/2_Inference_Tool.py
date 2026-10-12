@@ -91,7 +91,7 @@ with left:
             labels={"x": "Time Frames", "y": "Mel Bins", "color": "Power (dB)"},
         )
         fig.update_layout(margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 with right:
     st.markdown('<div class="card-panel">', unsafe_allow_html=True)
@@ -113,7 +113,7 @@ except Exception as exc:
     st.info("Live session data is unavailable until the Supabase credentials are configured. Once the database is connected, this table will populate automatically.")
     st.caption(f"Connection status: {exc}")
 
-st.dataframe(session_df, use_container_width=True)
+st.dataframe(session_df, width="stretch")
 
 csv = session_df.to_csv(index=False).encode("utf-8")
 st.download_button(

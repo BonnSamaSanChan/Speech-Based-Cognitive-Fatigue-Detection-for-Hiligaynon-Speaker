@@ -17,7 +17,7 @@ st.markdown(
         h1 { border-left: 5px solid #2563EB; padding-left: 0.75rem; }
         .stCaption { color: #475569; }
         .block-container {
-            padding-top: 1rem;
+            padding-top: 2rem;
             padding-bottom: 2rem;
         }
         .metric-card {
@@ -65,7 +65,7 @@ st.markdown(
         div[data-testid="stToolbar"], #MainMenu, footer,
         div[data-testid="stAppDeployButton"] { visibility: hidden; height: 0; }
         @media (max-width: 640px) {
-            .block-container { padding: 0.75rem 0.75rem 1.5rem; }
+            .block-container { padding: 1.5rem 0.75rem 1.5rem; }
             div[data-testid="stPageLink-NavLink"] { min-height: 48px; }
         }
     </style>
@@ -80,9 +80,9 @@ pages = [
 
 participant_page, researcher_page = st.columns(2)
 with participant_page:
-    st.page_link(pages[0], label="Participant Portal", icon="📝", use_container_width=True)
+    st.page_link(pages[0], label="Participant Portal", icon="📝", width="stretch")
 with researcher_page:
-    st.page_link(pages[1], label="Researcher Diagnostic Studio", icon="📊", use_container_width=True)
+    st.page_link(pages[1], label="Researcher Diagnostic Studio", icon="📊", width="stretch")
 
 navigation = st.navigation(pages)
 navigation.run()
