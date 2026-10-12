@@ -5,7 +5,7 @@ from urllib.request import urlopen
 
 import streamlit as st
 
-from src.database import purge_session_state
+from src.database import delete_participant_data, purge_session_state
 
 st.set_page_config(page_title="Participant Data Collection", layout="wide")
 
@@ -85,11 +85,26 @@ st.markdown(
             border-color: #1D4ED8;
         }
         div[data-testid="stProgress"] > div > div > div { background: #2563EB; }
+        div.stButton > button,
+        div[data-testid="stFileUploader"] button,
+        div[data-testid="stFileUploaderDropzone"] {
+            min-height: 48px;
+        }
+        div[data-testid="stRadio"] label {
+            min-height: 48px;
+            align-items: center;
+        }
         div[data-baseweb="select"] > div:focus-within,
         div[data-baseweb="input"]:focus-within,
         div[data-testid="stTextInput"] input:focus {
             border-color: #2563EB;
             box-shadow: 0 0 0 1px #2563EB;
+        }
+        @media (max-width: 640px) {
+            .block-container { padding: 0.75rem 0.75rem 1.5rem; }
+            .study-banner { padding: 0.9rem; }
+            .study-banner-title { font-size: 1.2rem; }
+            div[data-testid="stRadio"] [role="radiogroup"] { gap: 0.25rem; }
         }
     </style>
     """,
@@ -111,6 +126,8 @@ DEFAULTS = {
     "inference_results": {},
     "consent_accepted": False,
     "post_debrief_consent": False,
+    "pending_cloud_purge": None,
+    "cloud_purge_error": None,
     "post_debrief_choice": None,
     "birthplace": "",
     "birthplace_scope": "western_visayas",
@@ -213,6 +230,7 @@ UI_TEXT = {
         "draft_notice": "Question wording and difficulty progression are drafts; confirm them against the approved thesis protocol before participant recruitment.",
         "upload": "Upload or record speech audio",
         "upload_help": "Accepted formats: WAV, MP3, M4A, and OGG.",
+        "upload_processing": "Validating the uploaded recording...",
         "audio_ready": "Audio is ready for this task.",
         "audio_required": "Upload a recording before continuing.",
         "audio_error": "The audio file is empty. Upload a non-empty recording to continue.",
@@ -251,6 +269,7 @@ UI_TEXT = {
         "draft_notice": "Draft pa ang mga pulong kag kabudlayon sang buluhaton; ipasibu ini sa gin-aprubahan nga thesis protocol antes mag-recruit sang partisipante.",
         "upload": "Mag-upload ukon magrekord sang audio sang paghambal",
         "upload_help": "WAV, MP3, M4A, kag OGG lamang.",
+        "upload_processing": "Gina-usisa ang recording nga gin-upload...",
         "audio_ready": "Andam na ang audio para sa sini nga buluhaton.",
         "audio_required": "Mag-upload sang recording antes magpadayon.",
         "audio_error": "Wala sing sulod ang audio file. Mag-upload sang recording nga may sulod agod makapadayon.",
@@ -552,23 +571,6 @@ def load_all_ph_localities():
     return _format_locality_options(places, province_names)
 
 
-def update_recording():
-    task_level = TASK_LEVELS[st.session_state.task_index]
-    uploader_key = f"participant_audio_{st.session_state.session_id}_{task_level}"
-    uploaded = st.session_state.get(uploader_key)
-    audio_bytes = uploaded.getvalue() if uploaded else None
-    st.session_state.recorded_audio_bytes = audio_bytes
-    recordings = dict(st.session_state.task_recordings)
-    ratings = dict(st.session_state.task_ratings)
-    if audio_bytes:
-        recordings[task_level] = audio_bytes
-    else:
-        recordings.pop(task_level, None)
-        ratings.pop(task_level, None)
-        st.session_state.task_ratings = ratings
-    st.session_state.task_recordings = recordings
-
-
 def submit_screening():
     language = st.session_state.language
     messages = SCREENING_TEXT[language]
@@ -662,7 +664,7 @@ def save_rating_and_continue():
 
 def finish_debrief():
     if st.session_state.post_debrief_choice == "decline":
-        purge_session_state(st.session_state, destination_step=8)
+        purge_withdrawn_participant(destination_step=8)
     elif st.session_state.post_debrief_choice == "agree":
         st.session_state.current_step = 6
 
@@ -692,11 +694,35 @@ def clear_participant_data(destination_step):
 
 
 def withdraw_session():
-    purge_session_state(st.session_state, destination_step=7)
+    purge_withdrawn_participant(destination_step=7)
+
+
+def retry_cloud_purge():
+    purge_withdrawn_participant(destination_step=st.session_state.current_step)
+
+
+def purge_withdrawn_participant(destination_step):
+    pending = st.session_state.get("pending_cloud_purge")
+    if pending is None:
+        pending = {"respondent_id": st.session_state.respondent_id}
+        st.session_state.pending_cloud_purge = pending
+
+    try:
+        delete_participant_data(respondent_id=pending["respondent_id"])
+    except Exception as exc:
+        st.session_state.cloud_purge_error = str(exc)
+        purge_session_state(st.session_state, destination_step=destination_step)
+        return
+
+    st.session_state.cloud_purge_error = None
+    st.session_state.pending_cloud_purge = None
+    purge_session_state(st.session_state, destination_step=destination_step)
 
 
 def persist_post_debrief_choice():
     st.session_state.post_debrief_choice = st.session_state[f"post_debrief_choice_{st.session_state.session_id}"]
+    if st.session_state.post_debrief_choice == "decline":
+        purge_withdrawn_participant(destination_step=8)
 
 
 def render_study_banner(title, subtitle):
@@ -728,6 +754,11 @@ def render_progress(text):
                 on_click=withdraw_session,
                 type="secondary",
             )
+    if st.session_state.get("cloud_purge_error"):
+        st.error(
+            "Your local session has been cleared, but cloud deletion has not yet completed. "
+            "Reconnect to the database and retry the deletion below."
+        )
 
 
 def render_language_step(text):
@@ -942,12 +973,25 @@ def render_task_step():
         type=["wav", "mp3", "m4a", "ogg"],
         help=flow["upload_help"],
         key=audio_key,
-        on_change=update_recording,
     )
 
     if uploaded is not None:
-        st.audio(uploaded.getvalue())
-        if not st.session_state.recorded_audio_bytes:
+        with st.spinner(text["upload_processing"]):
+            audio_bytes = uploaded.getvalue()
+            if audio_bytes:
+                recordings = dict(st.session_state.task_recordings)
+                recordings[task_level] = audio_bytes
+                st.session_state.task_recordings = recordings
+                st.session_state.recorded_audio_bytes = audio_bytes
+            else:
+                recordings = dict(st.session_state.task_recordings)
+                recordings.pop(task_level, None)
+                st.session_state.task_recordings = recordings
+                st.session_state.recorded_audio_bytes = None
+        if audio_bytes:
+            st.audio(audio_bytes)
+            st.success(text["audio_ready"])
+        else:
             st.error(text["audio_error"])
     if st.session_state.recorded_audio_bytes:
         st.success(flow["task_complete"])
@@ -1075,8 +1119,14 @@ elif st.session_state.current_step == 6:
 elif st.session_state.current_step == 7:
     st.title(language_text["withdraw_title"])
     st.success(language_text["withdraw_body"])
+    if st.session_state.get("cloud_purge_error"):
+        st.error("Cloud deletion is pending. Your local session has been cleared.")
+        st.button("Retry cloud deletion", on_click=retry_cloud_purge)
     st.button(language_text["reset"], type="primary", on_click=reset_session)
 elif st.session_state.current_step == 8:
     st.title(language_text["declined_title"])
     st.success(language_text["declined_body"])
+    if st.session_state.get("cloud_purge_error"):
+        st.error("Cloud deletion is pending. Your local session has been cleared.")
+        st.button("Retry cloud deletion", on_click=retry_cloud_purge)
     st.button(language_text["reset"], type="primary", on_click=reset_session)

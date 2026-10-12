@@ -6,6 +6,7 @@ for the Hiligaynon speech-based cognitive fatigue detection study.
 """
 
 import uuid
+from urllib.parse import unquote, urlparse
 from typing import Optional
 
 import pandas as pd
@@ -83,6 +84,43 @@ def fetch_all_sessions() -> pd.DataFrame:
     supabase = get_supabase_client()
     response = supabase.table("fatigue_session").select("*").execute()
     return pd.DataFrame(response.data)
+
+
+def delete_participant_data(respondent_id: str) -> None:
+    """Delete a participant's session rows, respondent row, and stored recordings."""
+    supabase = get_supabase_client()
+    query = (
+        supabase.table("fatigue_session")
+        .select("audio_storage_url")
+        .eq("respondent_id", respondent_id)
+        .execute()
+    )
+
+    storage_paths = []
+    for row in query.data or []:
+        audio_url = row.get("audio_storage_url")
+        if not audio_url:
+            continue
+        path = unquote(urlparse(audio_url).path)
+        marker = "/audio-recordings/"
+        if marker in path:
+            storage_paths.append(path.split(marker, 1)[1])
+
+    if storage_paths:
+        supabase.storage.from_("audio-recordings").remove(sorted(set(storage_paths)))
+
+    (
+        supabase.table("fatigue_session")
+        .delete()
+        .eq("respondent_id", respondent_id)
+        .execute()
+    )
+    (
+        supabase.table("respondents")
+        .delete()
+        .eq("respondent_id", respondent_id)
+        .execute()
+    )
 
 
 def purge_session_state(session_state, destination_step: int = 0):
