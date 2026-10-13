@@ -104,7 +104,7 @@ def fetch_all_sessions() -> pd.DataFrame:
     return pd.DataFrame(response.data)
 
 
-def delete_participant_data(respondent_id: str) -> None:
+def delete_participant_data(respondent_id: str, session_id: Optional[str] = None) -> None:
     """Delete a participant's session rows, respondent row, and stored recordings."""
     supabase = get_supabase_client()
     query = (
@@ -123,6 +123,12 @@ def delete_participant_data(respondent_id: str) -> None:
         marker = "/audio-recordings/"
         if marker in path:
             storage_paths.append(path.split(marker, 1)[1])
+
+    if session_id:
+        storage_paths.extend(
+            f"{respondent_id}/{session_id}/{task_level.lower()}.wav"
+            for task_level in ("Easy", "Moderate", "Intensive")
+        )
 
     if storage_paths:
         supabase.storage.from_("audio-recordings").remove(sorted(set(storage_paths)))

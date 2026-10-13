@@ -355,8 +355,8 @@ FLOW_TEXT = {
         "app_title": "Pagkolekta sang Datos sang Partisipante",
         "language_label": "Pinili nga lenguahe",
         "language_title": "Pilia ang imo lenguahe",
-        "language_intro": "Pilia ang lenguahe nga gusto mo gamiton sa consent form kag sa bug-os nga questionnaire.",
-        "language_continue": "Padayon sa consent",
+        "language_intro": "Pilia ang lenguahe nga gusto mo gamiton sa pagsabat sang questionnaire.",
+        "language_continue": "Magpadayon sa consent",
         "consent_title": "Lakang 1 · Pagtugot nga May Kahibalo",
         "consent_ack": "Nabasa ko kag naintindihan ang impormasyon; boluntaryo ako nga nagauyon mag-apil.",
         "consent_next": "Nagauyon ako kag magapadayon",
@@ -401,13 +401,13 @@ CONSENT_TEXT = {
     },
     "Hiligaynon": {
         "purpose_title": "Katuyuan",
-        "purpose": "Ginatuon sang sini nga pagtuon ang paghambal kag mga sabat samtang nagahimo sang malip-ot nga mga buluhaton sa panghunahuna. Ang pila ka detalye ipahibalo pagkatapos sang mga buluhaton agod indi ini makaapekto sa imo mga sabat.",
-        "participation_title": "Ano ang pag-apil",
-        "participation": "Masabat ka sang mga pamangkot sa screening, maghimo sang tatlo ka buluhaton sa panghunahuna sunod-sunod, mag-upload sang recording pagkatapos sang kada buluhaton, kag magmarka sang kakapoy pagkatapos gid sang kada recording. Mahimo ini magdulot sang temporaryo nga pagpanikasog sang hunahuna ukon kakapoy.",
+        "purpose": "Ginausisa sang sini nga pagtuon ang paghambal kag mga sabat samtang nagahimo sang malip-ot nga mga buluhaton sa panghunahuna. Ang pila ka partikular nga detalye sang pagtuon ipahibalo pagkatapos sang mga buluhaton agod indi ini makaapekto sa imo mga sabat.",
+        "participation_title": "Ano ang nalakip sa pag-apil",
+        "participation": "Masabat ka sang mga pamangkot sa screening, makompleto sang tatlo ka ginahambal nga buluhaton sa panghunahuna sunod-sunod, mag-upload sang recording sang tingog pagkatapos sang tagsa ka buluhaton, kag markahan ang imo kakapoy gilayon pagkatapos sang tagsa ka recording. Mahimo ini magdulot sang temporaryo nga panikasog sang hunahuna ukon kakapoy.",
         "privacy_title": "Kompidensyalidad kag pagdumala sang datos",
-        "privacy": "Wala ginapangayo ang imo ngalan. Awtomatiko nga ginahimo ang kompidensyal nga kodigo sang partisipante. Mahimo makakilala sang tawo paagi sa iya tingog. Itipig sa database sang pagtuon ang mga sabat sa screening kag marka sang kakapoy, kag itipig sa audio storage ang mga recording para sa pag-usisa. Awtorisado lamang nga mga miyembro sang pagtuon ang dapat makakita sini nga mga rekord. Dapat may gin-aprubahan nga seguridad, access, pagtipig, kag retention antes mag-recruit.",
-        "withdraw_title": "Boluntaryo nga pag-apil kag pagbiya",
-        "withdraw": "Boluntaryo ang pag-apil. Mahimo ka magbiya bisan san-o nga wala sing silot paagi sa withdrawal button. Kuhaon sini ang aktibo nga mga sabat kag recording sa sesyon sang app. Pamangkuta ang research team kon paano kuhaon ang datos nga naipasa na suno sa gin-aprubahan nga protocol.",
+        "privacy": "Wala ginapangayo ang imo ngalan. Awtomatiko nga ginahimo ang kompidensyal nga kodigo sang partisipante. Mahimo makakilala sa imo paagi sa imo tingog. Itipig sa database sang pagtuon ang imo mga sabat sa screening kag marka sang kakapoy, kag itipig sa audio storage ang imo mga recording para sa pag-usisa. Awtorisado lamang nga mga miyembro sang pagtuon ang dapat makakita sini nga mga rekord. Dapat may gin-aprubahan nga kahimusan para sa seguridad, access, pagtipig, kag retention antes magsugod ang recruitment.",
+        "withdraw_title": "Boluntaryo nga pag-apil kag pag-atras",
+        "withdraw": "Boluntaryo ang imo pag-apil. Mahimo ka mag-atras bisan san-o nga wala sing penalidad paagi sa withdrawal control. Kuhaon sini ang aktibo nga mga sabat kag recording sa sesyon sang app, kag magapangayo ini sang pagtangtang sang datos nga naipasa na sa database sang pagtuon. Pamangkuta ang research team kon may problema sa pagkumpirma sang pagtangtang.",
     },
 }
 TASK_PROMPTS = {
@@ -767,11 +767,17 @@ def retry_cloud_purge():
 def purge_withdrawn_participant(destination_step):
     pending = st.session_state.get("pending_cloud_purge")
     if pending is None:
-        pending = {"respondent_id": st.session_state.respondent_id}
+        pending = {
+            "respondent_id": st.session_state.respondent_id,
+            "session_id": st.session_state.session_id,
+        }
         st.session_state.pending_cloud_purge = pending
 
     try:
-        delete_participant_data(respondent_id=pending["respondent_id"])
+        delete_participant_data(
+            respondent_id=pending["respondent_id"],
+            session_id=pending["session_id"],
+        )
     except Exception as exc:
         st.session_state.cloud_purge_error = str(exc)
         purge_error = str(exc)
@@ -1194,19 +1200,14 @@ language_text = FLOW_TEXT[st.session_state.language]
 if st.session_state.current_step == 0:
     render_language_step(language_text)
 elif st.session_state.current_step == 1:
-    st.title(language_text["app_title"])
     render_consent_step(language_text)
 elif st.session_state.current_step == 2:
-    st.title(language_text["app_title"])
     render_screening_step()
 elif st.session_state.current_step == 3:
-    st.title(language_text["app_title"])
     render_task_step()
 elif st.session_state.current_step == 4:
-    st.title(language_text["app_title"])
     render_rating_step()
 elif st.session_state.current_step == 5:
-    st.title(language_text["app_title"])
     render_debriefing_step()
 elif st.session_state.current_step == 6:
     st.title(language_text["complete_title"])
