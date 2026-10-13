@@ -11,4 +11,4 @@ enableCORS = false
 enableXsrfProtection = true
 
 [client]
-showSidebarNavigation = false
+showSidebarNavigation = true

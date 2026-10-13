@@ -5,7 +5,14 @@ from urllib.request import urlopen
 
 import streamlit as st
 
-from src.database import purge_session_state
+from src.audio_processor import standardize_audio
+from src.database import (
+    delete_participant_data,
+    log_session,
+    purge_session_state,
+    save_respondent,
+    upload_audio_blob,
+)
 
 st.set_page_config(page_title="Participant Data Collection", layout="wide")
 
@@ -85,11 +92,26 @@ st.markdown(
             border-color: #1D4ED8;
         }
         div[data-testid="stProgress"] > div > div > div { background: #2563EB; }
+        div.stButton > button,
+        div[data-testid="stFileUploader"] button,
+        div[data-testid="stFileUploaderDropzone"] {
+            min-height: 48px;
+        }
+        div[data-testid="stRadio"] label {
+            min-height: 48px;
+            align-items: center;
+        }
         div[data-baseweb="select"] > div:focus-within,
         div[data-baseweb="input"]:focus-within,
         div[data-testid="stTextInput"] input:focus {
             border-color: #2563EB;
             box-shadow: 0 0 0 1px #2563EB;
+        }
+        @media (max-width: 640px) {
+            .block-container { padding: 1.5rem 0.75rem 1.5rem; }
+            .study-banner { padding: 0.9rem; }
+            .study-banner-title { font-size: 1.2rem; }
+            div[data-testid="stRadio"] [role="radiogroup"] { gap: 0.25rem; }
         }
     </style>
     """,
@@ -108,9 +130,13 @@ DEFAULTS = {
     "task_recordings": {},
     "samn_perelli_rating": None,
     "task_ratings": {},
+    "ingested_tasks": {},
     "inference_results": {},
+    "persistence_error": None,
     "consent_accepted": False,
     "post_debrief_consent": False,
+    "pending_cloud_purge": None,
+    "cloud_purge_error": None,
     "post_debrief_choice": None,
     "birthplace": "",
     "birthplace_scope": "western_visayas",
@@ -155,6 +181,7 @@ SCREENING_TEXT = {
         "birthplace_scopes": {"western_visayas": "Western Visayas", "philippines": "Elsewhere in the Philippines", "outside_ph": "Outside the Philippines"},
         "birthplace_manual": "Enter your birthplace for researcher verification",
         "birthplace_pending": "This location will be marked for manual verification; it is not checked against the PSGC.",
+        "birthplace_fallback": "The official locality list is temporarily unavailable. Enter your city or municipality below; the research team will verify it manually.",
         "birthplace_province": "Province",
         "birthplace_locality": "City or municipality",
         "birthplace_unavailable": "The official locality list is unavailable. Check your connection and try again; you cannot continue without a verified selection.",
@@ -182,6 +209,7 @@ SCREENING_TEXT = {
         "birthplace_scopes": {"western_visayas": "Western Visayas", "philippines": "Sa iban nga bahin sang Pilipinas", "outside_ph": "Sa guwa sang Pilipinas"},
         "birthplace_manual": "Isulat ang lugar nga natawhan para mapanghimatuudan sang manug-usisa",
         "birthplace_pending": "Markahan ini nga lugar para panghimatuudan sang manug-usisa; wala ini nasusi sa PSGC.",
+        "birthplace_fallback": "Indi makuha temporaryo ang opisyal nga listahan sang mga lugar. Isulat sa idalom ang imo syudad ukon munisipalidad agod mapanghimatuudan sang research team.",
         "birthplace_province": "Probinsya",
         "birthplace_locality": "Syudad ukon munisipalidad",
         "birthplace_unavailable": "Indi makuha ang opisyal nga listahan sang mga lugar. Usisaa ang koneksyon kag magtilaw liwat; indi ka makapadayon kon wala sing napilian nga ginpanghimatuudan.",
@@ -213,6 +241,7 @@ UI_TEXT = {
         "draft_notice": "Question wording and difficulty progression are drafts; confirm them against the approved thesis protocol before participant recruitment.",
         "upload": "Upload or record speech audio",
         "upload_help": "Accepted formats: WAV, MP3, M4A, and OGG.",
+        "upload_processing": "Validating the uploaded recording...",
         "audio_ready": "Audio is ready for this task.",
         "audio_required": "Upload a recording before continuing.",
         "audio_error": "The audio file is empty. Upload a non-empty recording to continue.",
@@ -226,7 +255,7 @@ UI_TEXT = {
         "thanks": "Thank you for completing the task.",
         "disclosure_title": "Disclosure",
         "disclosure": "The true target of this study is cognitive fatigue as reflected in speech. The task prompts were used to elicit speech while varying cognitive effort; this specific focus was not fully explained before the task to reduce response bias.",
-        "withdrawal": "You may now ask questions or withdraw. Your recording and responses were sent to the application server for processing in this session, but this prototype does not save them to a research database or submit them for analysis.",
+        "withdrawal": "You may now ask questions or withdraw. Your screening answers, fatigue ratings, and recordings have been submitted to the study database and audio storage. If you withdraw or decline use of your data, the app will request deletion; ask the research team to confirm removal if the app reports a deletion problem.",
         "participant_code": "Confidential participant code",
         "task_label": "Task level",
         "rating_label": "Samn–Perelli rating",
@@ -235,8 +264,8 @@ UI_TEXT = {
         "recording_missing": "Not uploaded",
         "no_rating": "Not provided",
         "post_consent": "After learning the true purpose, I agree that my data may be used for the study.",
-        "post_consent_yes": "Your agreement is noted in this active session only. This prototype does not save data to a research database or submit it for analysis.",
-        "post_consent_no": "Choosing this option clears your active session answers and uploaded recordings.",
+        "post_consent_yes": "Your agreement is recorded with your study data in the research database and audio storage, in accordance with the approved study protocol.",
+        "post_consent_no": "Choosing this option requests deletion of your submitted study records and stored recordings, and clears your active app session.",
         "reset": "Reset session",
         "native_names": {"Hiligaynon": "Hiligaynon", "Kinaray-a": "Kinaray-a", "Filipino": "Filipino", "English": "English", "Other": "Other"},
         "scale_labels": ["1 · Fully alert", "2 · Very lively", "3 · Okay, somewhat fresh", "4 · A little tired", "5 · Moderately tired", "6 · Extremely tired", "7 · Completely exhausted"],
@@ -251,6 +280,7 @@ UI_TEXT = {
         "draft_notice": "Draft pa ang mga pulong kag kabudlayon sang buluhaton; ipasibu ini sa gin-aprubahan nga thesis protocol antes mag-recruit sang partisipante.",
         "upload": "Mag-upload ukon magrekord sang audio sang paghambal",
         "upload_help": "WAV, MP3, M4A, kag OGG lamang.",
+        "upload_processing": "Gina-usisa ang recording nga gin-upload...",
         "audio_ready": "Andam na ang audio para sa sini nga buluhaton.",
         "audio_required": "Mag-upload sang recording antes magpadayon.",
         "audio_error": "Wala sing sulod ang audio file. Mag-upload sang recording nga may sulod agod makapadayon.",
@@ -264,7 +294,7 @@ UI_TEXT = {
         "thanks": "Salamat sa paghuman sang buluhaton.",
         "disclosure_title": "Pagpahayag",
         "disclosure": "Ang matuod nga ginatuon sang sini nga pagtuon amo ang kakapoy sang panghunahuna nga makita sa paghambal. Gin-gamit ang mga buluhaton agod makakuha sang mga halimbawa sang paghambal samtang nagabag-o ang panikasog sang panghunahuna; wala ginpaathag sing bug-os ang sini nga tuyo antes sang buluhaton agod malikawan ang pagbag-o sang sabat.",
-        "withdrawal": "Mahimo ka mamangkot ukon magbiya sa pagtuon. Ginpadala sa application server ang imo recording kag mga sabat agod maproseso sa sini nga sesyon, pero wala ini ginatipigan sang prototype sa database sang pagtuon ukon ginapasa para sa pag-usisa.",
+        "withdrawal": "Mahimo ka mamangkot ukon magbiya sa pagtuon. Ginpasa na sa database kag audio storage sang pagtuon ang imo mga sabat sa screening, marka sang kakapoy, kag mga recording. Kon magbiya ka ukon indi mouyon nga gamiton ang datos, magapangayo ang app sang pag-delete; kontaka ang research team agod kumpirmahon ang pagtangtang kon may problema ang app.",
         "participant_code": "Kompidensyal nga kodigo sang partisipante",
         "task_label": "Kabudlayon sang buluhaton",
         "rating_label": "Marka nga Samn–Perelli",
@@ -273,8 +303,8 @@ UI_TEXT = {
         "recording_missing": "Wala na-upload",
         "no_rating": "Wala ginhatag",
         "post_consent": "Pagkatapos mahibaluan ang matuod nga katuyuan, nagauyon ako nga gamiton ang akon datos para sa pagtuon.",
-        "post_consent_yes": "Narekord ang imo pag-uyon sa aktibo nga sesyon lamang. Wala ginatipigan sang prototype ang datos sa database sang pagtuon ukon ginapasa ini para usisaon.",
-        "post_consent_no": "Kon pilion ini, kuhaon ang aktibo nga mga sabat kag recording sa sesyon.",
+        "post_consent_yes": "Irekord ang imo pag-uyon upod sa datos sa database kag audio storage sang pagtuon suno sa gin-aprubahan nga study protocol.",
+        "post_consent_no": "Kon pilion ini, magapangayo ang app sang pagtangtang sang imo mga rekord kag recording sa pagtuon, kag kuhaon man ang datos sa aktibo nga sesyon sang app.",
         "reset": "Sugdan liwat ang sesyon",
         "native_names": {"Hiligaynon": "Hiligaynon", "Kinaray-a": "Kinaray-a", "Filipino": "Filipino", "English": "Ingles", "Other": "Iban pa"},
         "scale_labels": ["1 · Bugtaw gid", "2 · Buhi kag madinalag-on", "3 · Maayo kag medyo presko", "4 · Medyo kapoy", "5 · Kasarang nga kapoy", "6 · Kapoy gid", "7 · Gid-ka-kapoy"],
@@ -309,12 +339,12 @@ FLOW_TEXT = {
         "frequency_values": ["Rarely", "Sometimes", "About half the day", "Often", "Almost always"],
         "withdraw": "Withdraw and clear this session",
         "withdraw_title": "Session withdrawn",
-        "withdraw_body": "Your active questionnaire answers and task recordings have been cleared from this app session. No research database is connected in this prototype.",
+        "withdraw_body": "Your active app session has been cleared. The app requested deletion of your study records and stored recordings.",
         "post_consent_prompt": "After this disclosure, do you agree to the use of these data for the study?",
         "post_consent_options": {"agree": "I agree", "decline": "I do not agree; clear my session data"},
         "finish_debrief": "Confirm choice",
         "complete_title": "Questionnaire complete",
-        "complete_body": "Your choice was noted in this active session only. This prototype does not save data to a research database or submit it for analysis.",
+        "complete_body": "Your agreement was recorded with your study data in the research database and audio storage.",
         "declined_title": "Session data cleared",
         "declined_body": "You declined post-debriefing data use. Active session answers and uploaded recordings have been cleared.",
         "reset": "Start a new session",
@@ -325,8 +355,8 @@ FLOW_TEXT = {
         "app_title": "Pagkolekta sang Datos sang Partisipante",
         "language_label": "Pinili nga lenguahe",
         "language_title": "Pilia ang imo lenguahe",
-        "language_intro": "Pilia ang lenguahe nga gusto mo gamiton sa consent form kag sa bug-os nga questionnaire.",
-        "language_continue": "Padayon sa consent",
+        "language_intro": "Pilia ang lenguahe nga gusto mo gamiton sa pagsabat sang questionnaire.",
+        "language_continue": "Magpadayon sa consent",
         "consent_title": "Lakang 1 · Pagtugot nga May Kahibalo",
         "consent_ack": "Nabasa ko kag naintindihan ang impormasyon; boluntaryo ako nga nagauyon mag-apil.",
         "consent_next": "Nagauyon ako kag magapadayon",
@@ -345,12 +375,12 @@ FLOW_TEXT = {
         "frequency_values": ["Talagsa", "Kon kaisa", "Mga tunga sang adlaw", "Perme", "Halos permi"],
         "withdraw": "Magbiya kag kuhaa ang datos sa sini nga sesyon",
         "withdraw_title": "Nagbiya ka sa sesyon",
-        "withdraw_body": "Ginkuha na ang imo mga sabat kag recording sa aktibo nga sesyon sang app. Wala konektado nga database sang pagtuon sa sini nga prototype.",
+        "withdraw_body": "Ginkuha na ang datos sa aktibo nga sesyon sang app. Nagpangayo ang app sang pagtangtang sang imo mga rekord kag recording sa pagtuon.",
         "post_consent_prompt": "Pagkatapos sini nga pagpaathag, nagauyon ka bala nga gamiton ang datos para sa pagtuon?",
         "post_consent_options": {"agree": "Nagauyon ako", "decline": "Indi ako nagauyon; kuhaa ang akon datos sa sesyon"},
         "finish_debrief": "Kumpirmahon ang akon pilian",
         "complete_title": "Natapos ang questionnaire",
-        "complete_body": "Narekord ang imo pilian sa aktibo nga sesyon lamang. Wala ginatipigan sang prototype ang datos sa database sang pagtuon ukon ginapasa ini para usisaon.",
+        "complete_body": "Narekord ang imo pag-uyon upod sa datos sa database kag audio storage sang pagtuon.",
         "declined_title": "Ginkuha ang datos sang sesyon",
         "declined_body": "Wala ka nagauyon sa paggamit sang datos pagkatapos sang pagpaathag. Ginkuha na ang aktibo nga mga sabat kag recording.",
         "reset": "Magsugod sang bag-o nga sesyon",
@@ -365,19 +395,19 @@ CONSENT_TEXT = {
         "participation_title": "What participation involves",
         "participation": "You will answer screening questions, complete three spoken cognitive tasks in order, upload a voice recording after each task, and rate your fatigue immediately after each recording. These activities may cause temporary mental effort or tiredness.",
         "privacy_title": "Confidentiality and data handling",
-        "privacy": "Your name is not requested. A confidential participant code is generated automatically. Voice recordings can identify you. Uploaded recordings and answers are sent to the application server for processing during this session. This prototype has no research database connected and does not submit data for analysis. Approved security, access, storage, and retention arrangements must be in place before recruitment.",
+        "privacy": "Your name is not requested. A confidential participant code is generated automatically. Voice recordings can identify you. Screening answers and fatigue ratings are stored in the study database, and recordings are stored in the study's audio storage for analysis. Only authorized study personnel should access these records. Approved security, access, storage, and retention arrangements must be in place before recruitment.",
         "withdraw_title": "Voluntary participation and withdrawal",
         "withdraw": "Participation is voluntary. You may withdraw at any time without penalty by using the withdrawal control. It clears the active questionnaire answers and recordings from this app session. Ask the research team about removal of any data already submitted under the approved study protocol.",
     },
     "Hiligaynon": {
         "purpose_title": "Katuyuan",
-        "purpose": "Ginatuon sang sini nga pagtuon ang paghambal kag mga sabat samtang nagahimo sang malip-ot nga mga buluhaton sa panghunahuna. Ang pila ka detalye ipahibalo pagkatapos sang mga buluhaton agod indi ini makaapekto sa imo mga sabat.",
-        "participation_title": "Ano ang pag-apil",
-        "participation": "Masabat ka sang mga pamangkot sa screening, maghimo sang tatlo ka buluhaton sa panghunahuna sunod-sunod, mag-upload sang recording pagkatapos sang kada buluhaton, kag magmarka sang kakapoy pagkatapos gid sang kada recording. Mahimo ini magdulot sang temporaryo nga pagpanikasog sang hunahuna ukon kakapoy.",
+        "purpose": "Ginausisa sang sini nga pagtuon ang paghambal kag mga sabat samtang nagahimo sang malip-ot nga mga buluhaton sa panghunahuna. Ang pila ka partikular nga detalye sang pagtuon ipahibalo pagkatapos sang mga buluhaton agod indi ini makaapekto sa imo mga sabat.",
+        "participation_title": "Ano ang nalakip sa pag-apil",
+        "participation": "Masabat ka sang mga pamangkot sa screening, makompleto sang tatlo ka ginahambal nga buluhaton sa panghunahuna sunod-sunod, mag-upload sang recording sang tingog pagkatapos sang tagsa ka buluhaton, kag markahan ang imo kakapoy gilayon pagkatapos sang tagsa ka recording. Mahimo ini magdulot sang temporaryo nga panikasog sang hunahuna ukon kakapoy.",
         "privacy_title": "Kompidensyalidad kag pagdumala sang datos",
-        "privacy": "Wala ginapangayo ang imo ngalan. Awtomatiko nga ginahimo ang kompidensyal nga kodigo sang partisipante. Mahimo makakilala sang tawo paagi sa iya tingog. Ginapadala sa application server ang mga recording kag sabat agod maproseso sa aktibo nga sesyon. Wala konektado nga database sang pagtuon sa sini nga prototype kag wala ginapasa ang datos para sa pag-usisa. Dapat may gin-aprubahan nga seguridad, access, pagtipig, kag retention antes mag-recruit.",
-        "withdraw_title": "Boluntaryo nga pag-apil kag pagbiya",
-        "withdraw": "Boluntaryo ang pag-apil. Mahimo ka magbiya bisan san-o nga wala sing silot paagi sa withdrawal button. Kuhaon sini ang aktibo nga mga sabat kag recording sa sesyon sang app. Pamangkuta ang research team kon paano kuhaon ang datos nga naipasa na suno sa gin-aprubahan nga protocol.",
+        "privacy": "Wala ginapangayo ang imo ngalan. Awtomatiko nga ginahimo ang kompidensyal nga kodigo sang partisipante. Mahimo makakilala sa imo paagi sa imo tingog. Itipig sa database sang pagtuon ang imo mga sabat sa screening kag marka sang kakapoy, kag itipig sa audio storage ang imo mga recording para sa pag-usisa. Awtorisado lamang nga mga miyembro sang pagtuon ang dapat makakita sini nga mga rekord. Dapat may gin-aprubahan nga kahimusan para sa seguridad, access, pagtipig, kag retention antes magsugod ang recruitment.",
+        "withdraw_title": "Boluntaryo nga pag-apil kag pag-atras",
+        "withdraw": "Boluntaryo ang imo pag-apil. Mahimo ka mag-atras bisan san-o nga wala sing penalidad paagi sa withdrawal control. Kuhaon sini ang aktibo nga mga sabat kag recording sa sesyon sang app, kag magapangayo ini sang pagtangtang sang datos nga naipasa na sa database sang pagtuon. Pamangkuta ang research team kon may problema sa pagkumpirma sang pagtangtang.",
     },
 }
 TASK_PROMPTS = {
@@ -552,23 +582,6 @@ def load_all_ph_localities():
     return _format_locality_options(places, province_names)
 
 
-def update_recording():
-    task_level = TASK_LEVELS[st.session_state.task_index]
-    uploader_key = f"participant_audio_{st.session_state.session_id}_{task_level}"
-    uploaded = st.session_state.get(uploader_key)
-    audio_bytes = uploaded.getvalue() if uploaded else None
-    st.session_state.recorded_audio_bytes = audio_bytes
-    recordings = dict(st.session_state.task_recordings)
-    ratings = dict(st.session_state.task_ratings)
-    if audio_bytes:
-        recordings[task_level] = audio_bytes
-    else:
-        recordings.pop(task_level, None)
-        ratings.pop(task_level, None)
-        st.session_state.task_ratings = ratings
-    st.session_state.task_recordings = recordings
-
-
 def submit_screening():
     language = st.session_state.language
     messages = SCREENING_TEXT[language]
@@ -577,7 +590,7 @@ def submit_screening():
 
     if not birthplace:
         errors.append(messages["required_manual_birthplace"] if st.session_state.birthplace_scope == "outside_ph" else messages["required_birthplace"])
-    elif st.session_state.birthplace_scope == "western_visayas":
+    elif st.session_state.birthplace_scope == "western_visayas" and not st.session_state.birthplace_needs_review:
         try:
             allowed_birthplaces = load_province_localities(st.session_state.birthplace_province_code)
         except (OSError, URLError, ValueError, json.JSONDecodeError):
@@ -585,7 +598,7 @@ def submit_screening():
             errors.append(messages["birthplace_unavailable"])
         if allowed_birthplaces and birthplace not in allowed_birthplaces:
             errors.append(messages["invalid_birthplace"])
-    elif st.session_state.birthplace_scope == "philippines":
+    elif st.session_state.birthplace_scope == "philippines" and not st.session_state.birthplace_needs_review:
         try:
             allowed_birthplaces = load_all_ph_localities()
         except (OSError, URLError, ValueError, json.JSONDecodeError):
@@ -612,6 +625,21 @@ def submit_screening():
 
     st.session_state.screening_errors = errors
     if not errors:
+        try:
+            save_respondent(
+                respondent_id=st.session_state.respondent_id,
+                birthplace=birthplace,
+                native_lang=native_language,
+                freq_score=int(st.session_state.hiligaynon_frequency_score),
+            )
+        except Exception as exc:
+            st.session_state.persistence_error = str(exc)
+            st.session_state.screening_errors = [
+                "We could not save your screening details. Check the connection and try again."
+            ]
+            return
+
+        st.session_state.persistence_error = None
         st.session_state.current_task_level = TASK_LEVELS[0]
         st.session_state.task_index = 0
         st.session_state.recorded_audio_bytes = None
@@ -657,12 +685,44 @@ def save_rating_and_continue():
         st.session_state.recorded_audio_bytes = st.session_state.task_recordings.get(st.session_state.current_task_level)
         st.session_state.current_step = 3
     else:
+        pending_tasks = [
+            task for task in TASK_LEVELS
+            if task not in st.session_state.ingested_tasks
+        ]
+        try:
+            for task in pending_tasks:
+                audio_bytes = st.session_state.task_recordings.get(task)
+                rating = st.session_state.task_ratings.get(task)
+                if not audio_bytes or rating is None:
+                    raise ValueError(f"Task {task} is missing its recording or fatigue rating.")
+
+                wav_bytes = standardize_audio(audio_bytes)
+                filename = (
+                    f"{st.session_state.respondent_id}/"
+                    f"{st.session_state.session_id}/{task.lower()}.wav"
+                )
+                audio_url = upload_audio_blob(wav_bytes, filename)
+                log_session(
+                    respondent_id=st.session_state.respondent_id,
+                    task_level=task,
+                    ground_truth=int(rating),
+                    audio_url=audio_url,
+                    session_id=st.session_state.session_id,
+                )
+                ingested = dict(st.session_state.ingested_tasks)
+                ingested[task] = audio_url
+                st.session_state.ingested_tasks = ingested
+        except Exception as exc:
+            st.session_state.persistence_error = str(exc)
+            return
+
+        st.session_state.persistence_error = None
         st.session_state.current_step = 5
 
 
 def finish_debrief():
     if st.session_state.post_debrief_choice == "decline":
-        purge_session_state(st.session_state, destination_step=8)
+        purge_withdrawn_participant(destination_step=8)
     elif st.session_state.post_debrief_choice == "agree":
         st.session_state.current_step = 6
 
@@ -670,8 +730,12 @@ def finish_debrief():
 def clear_participant_data(destination_step):
     st.session_state.task_recordings = {}
     st.session_state.task_ratings = {}
+    st.session_state.ingested_tasks = {}
     st.session_state.recorded_audio_bytes = None
     st.session_state.inference_results = {}
+    st.session_state.persistence_error = None
+    st.session_state.pending_cloud_purge = None
+    st.session_state.cloud_purge_error = None
     st.session_state.respondent_id = f"WVSU-{uuid.uuid4().hex}"
     st.session_state.birthplace = ""
     st.session_state.birthplace_manual_text = ""
@@ -687,16 +751,50 @@ def clear_participant_data(destination_step):
     st.session_state.consent_accepted = False
     st.session_state.post_debrief_choice = None
     st.session_state.post_debrief_consent = False
+    st.session_state.persistence_error = None
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.current_step = destination_step
 
 
 def withdraw_session():
-    purge_session_state(st.session_state, destination_step=7)
+    purge_withdrawn_participant(destination_step=7)
+
+
+def retry_cloud_purge():
+    purge_withdrawn_participant(destination_step=st.session_state.current_step)
+
+
+def purge_withdrawn_participant(destination_step):
+    pending = st.session_state.get("pending_cloud_purge")
+    if pending is None:
+        pending = {
+            "respondent_id": st.session_state.respondent_id,
+            "session_id": st.session_state.session_id,
+        }
+        st.session_state.pending_cloud_purge = pending
+
+    try:
+        delete_participant_data(
+            respondent_id=pending["respondent_id"],
+            session_id=pending["session_id"],
+        )
+    except Exception as exc:
+        st.session_state.cloud_purge_error = str(exc)
+        purge_error = str(exc)
+        purge_session_state(st.session_state, destination_step=destination_step)
+        st.session_state.pending_cloud_purge = pending
+        st.session_state.cloud_purge_error = purge_error
+        return
+
+    st.session_state.cloud_purge_error = None
+    st.session_state.pending_cloud_purge = None
+    purge_session_state(st.session_state, destination_step=destination_step)
 
 
 def persist_post_debrief_choice():
     st.session_state.post_debrief_choice = st.session_state[f"post_debrief_choice_{st.session_state.session_id}"]
+    if st.session_state.post_debrief_choice == "decline":
+        purge_withdrawn_participant(destination_step=8)
 
 
 def render_study_banner(title, subtitle):
@@ -728,6 +826,15 @@ def render_progress(text):
                 on_click=withdraw_session,
                 type="secondary",
             )
+    if st.session_state.get("cloud_purge_error"):
+        st.error(
+            "Your local session has been cleared, but cloud deletion has not yet completed. "
+            "Reconnect to the database and retry the deletion below."
+        )
+    if st.session_state.get("persistence_error"):
+        st.error(
+            "Data could not be saved to the research database. Please check the connection and retry."
+        )
 
 
 def render_language_step(text):
@@ -827,19 +934,28 @@ def render_screening_step():
 
     if st.session_state.birthplace_scope != "outside_ph":
         if not birthplace_available:
-            st.error(text["birthplace_unavailable"])
-        locality_key = f"birthplace_locality_{session_id}_{st.session_state.birthplace_province_code}"
-        if st.session_state.birthplace_scope == "philippines":
-            locality_key = f"birthplace_locality_{session_id}_philippines"
-        selected_birthplace = st.session_state.birthplace if st.session_state.birthplace in birthplace_options else None
-        st.selectbox(
-            text["birthplace_locality"],
-            options=birthplace_options,
-            index=birthplace_options.index(selected_birthplace) if selected_birthplace else None,
-            key=locality_key,
-            on_change=persist_birthplace_locality,
-            disabled=not birthplace_options,
-        )
+            st.warning(text["birthplace_fallback"])
+            manual_key = f"birthplace_manual_{session_id}"
+            st.text_input(
+                text["birthplace_manual"],
+                value=st.session_state.birthplace_manual_text,
+                max_chars=120,
+                key=manual_key,
+                on_change=persist_manual_birthplace,
+            )
+        else:
+            locality_key = f"birthplace_locality_{session_id}_{st.session_state.birthplace_province_code}"
+            if st.session_state.birthplace_scope == "philippines":
+                locality_key = f"birthplace_locality_{session_id}_philippines"
+            selected_birthplace = st.session_state.birthplace if st.session_state.birthplace in birthplace_options else None
+            st.selectbox(
+                text["birthplace_locality"],
+                options=birthplace_options,
+                index=birthplace_options.index(selected_birthplace) if selected_birthplace else None,
+                key=locality_key,
+                on_change=persist_birthplace_locality,
+                disabled=not birthplace_options,
+            )
     else:
         manual_key = f"birthplace_manual_{session_id}"
         st.text_input(
@@ -903,15 +1019,21 @@ def render_screening_step():
 
     previous_col, next_col = st.columns(2)
     with previous_col:
-        st.button(text["previous"], on_click=previous_step, use_container_width=True)
+        st.button(text["previous"], on_click=previous_step, width="stretch")
     with next_col:
-        st.button(
+        if st.button(
             text["next"],
             type="primary",
-            on_click=submit_screening,
-            use_container_width=True,
-            disabled=not birthplace_available,
-        )
+            width="stretch",
+            disabled=(
+                not birthplace_available
+                and not st.session_state.birthplace_manual_text.strip()
+            ),
+        ):
+            with st.spinner("Saving participant screening details..."):
+                submit_screening()
+            if st.session_state.current_step == 3:
+                st.rerun()
 
 
 def render_task_step():
@@ -942,12 +1064,25 @@ def render_task_step():
         type=["wav", "mp3", "m4a", "ogg"],
         help=flow["upload_help"],
         key=audio_key,
-        on_change=update_recording,
     )
 
     if uploaded is not None:
-        st.audio(uploaded.getvalue())
-        if not st.session_state.recorded_audio_bytes:
+        with st.spinner(text["upload_processing"]):
+            audio_bytes = uploaded.getvalue()
+            if audio_bytes:
+                recordings = dict(st.session_state.task_recordings)
+                recordings[task_level] = audio_bytes
+                st.session_state.task_recordings = recordings
+                st.session_state.recorded_audio_bytes = audio_bytes
+            else:
+                recordings = dict(st.session_state.task_recordings)
+                recordings.pop(task_level, None)
+                st.session_state.task_recordings = recordings
+                st.session_state.recorded_audio_bytes = None
+        if audio_bytes:
+            st.audio(audio_bytes)
+            st.success(text["audio_ready"])
+        else:
             st.error(text["audio_error"])
     if st.session_state.recorded_audio_bytes:
         st.success(flow["task_complete"])
@@ -956,12 +1091,12 @@ def render_task_step():
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.button(screening["previous"], use_container_width=True, on_click=previous_step)
+        st.button(screening["previous"], width="stretch", on_click=previous_step)
     with col2:
         st.button(
             flow["next_rating"],
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=not st.session_state.task_recordings.get(task_level),
             on_click=open_rating_step,
         )
@@ -992,15 +1127,26 @@ def render_rating_step():
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.button(screening["previous"], use_container_width=True, on_click=previous_step)
+        st.button(screening["previous"], width="stretch", on_click=previous_step)
     with col2:
-        st.button(
+        if st.button(
             flow["finish_tasks"] if st.session_state.task_index == len(TASK_LEVELS) - 1 else flow["next_task"],
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=rating is None,
-            on_click=save_rating_and_continue,
-        )
+        ):
+            if st.session_state.task_index == len(TASK_LEVELS) - 1:
+                with st.spinner("Standardizing and uploading all task recordings..."):
+                    save_rating_and_continue()
+            else:
+                save_rating_and_continue()
+            if st.session_state.get("persistence_error"):
+                st.error(
+                    "We could not save the task data to the research database. "
+                    "Check the connection and retry."
+                )
+            else:
+                st.rerun()
 
 
 def render_debriefing_step():
@@ -1054,19 +1200,14 @@ language_text = FLOW_TEXT[st.session_state.language]
 if st.session_state.current_step == 0:
     render_language_step(language_text)
 elif st.session_state.current_step == 1:
-    st.title(language_text["app_title"])
     render_consent_step(language_text)
 elif st.session_state.current_step == 2:
-    st.title(language_text["app_title"])
     render_screening_step()
 elif st.session_state.current_step == 3:
-    st.title(language_text["app_title"])
     render_task_step()
 elif st.session_state.current_step == 4:
-    st.title(language_text["app_title"])
     render_rating_step()
 elif st.session_state.current_step == 5:
-    st.title(language_text["app_title"])
     render_debriefing_step()
 elif st.session_state.current_step == 6:
     st.title(language_text["complete_title"])
@@ -1075,8 +1216,14 @@ elif st.session_state.current_step == 6:
 elif st.session_state.current_step == 7:
     st.title(language_text["withdraw_title"])
     st.success(language_text["withdraw_body"])
+    if st.session_state.get("cloud_purge_error"):
+        st.error("Cloud deletion is pending. Your local session has been cleared.")
+        st.button("Retry cloud deletion", on_click=retry_cloud_purge)
     st.button(language_text["reset"], type="primary", on_click=reset_session)
 elif st.session_state.current_step == 8:
     st.title(language_text["declined_title"])
     st.success(language_text["declined_body"])
+    if st.session_state.get("cloud_purge_error"):
+        st.error("Cloud deletion is pending. Your local session has been cleared.")
+        st.button("Retry cloud deletion", on_click=retry_cloud_purge)
     st.button(language_text["reset"], type="primary", on_click=reset_session)
