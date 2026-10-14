@@ -1,9 +1,20 @@
+import os
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-from src.audio_processor import extract_mel_spectrogram
+from src.audio_processor import extract_mel_spectrogram, prepare_model_tensor
 from src.database import fetch_all_sessions
+
+# Optional TensorFlow import: prevents crashes if running in a lightweight collection environment
+try:
+    import tensorflow as tf
+    from src.model_architecture import TemporalAttention
+except ImportError:
+    tf = None
+    TemporalAttention = None
 
 st.set_page_config(page_title="Researcher Diagnostic Studio", layout="wide")
 
@@ -56,6 +67,21 @@ st.markdown(
 st.title("Researcher Diagnostic Studio")
 st.caption("Audio review, Mel-spectrogram analysis, attention diagnostics, and logged sessions")
 
+MODEL_PATH = "fatigue_cnn_attention.keras"
+CLASS_NAMES = ["Low", "Moderate", "High"]
+STATUS_CLASSES = ["status-low", "status-moderate", "status-high"]
+
+@st.cache_resource
+def load_fatigue_model():
+    """Dynamically loads the trained model if present; returns None if not yet trained."""
+    if tf is None or not os.path.exists(MODEL_PATH):
+        return None
+    try:
+        custom_objects = {"TemporalAttention": TemporalAttention} if TemporalAttention else {}
+        return tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
+    except Exception:
+        return None
+    
 uploaded_audio = st.file_uploader(
     "Upload recorded audio",
     type=["wav", "mp3", "m4a", "ogg"],
@@ -96,7 +122,62 @@ with left:
 with right:
     st.markdown('<div class="card-panel">', unsafe_allow_html=True)
     st.subheader("Fatigue classification")
-    st.info("Prediction and attention analysis are unavailable because a trained model is not connected yet.")
+
+    trained_model = load_fatigue_model()
+
+    if trained_model is None:
+        # Default fallback shown until the .keras file is placed in the project directory
+        st.info("Prediction and attention analysis are unavailable because a trained model is not connected yet.")
+    elif uploaded_audio is None:
+        st.info("Upload an audio recording to inspect fatigue predictions.")
+    elif mel_spectrogram is not None:
+        try:
+            input_tensor = prepare_model_tensor(mel_spectrogram)
+            model_output = trained_model.predict(input_tensor, verbose=0)
+
+            # Polymorphic handling: supports both single-output and dual-output (attention) models
+            if isinstance(model_output, (list, tuple)):
+                predictions, attention_weights = model_output[0], model_output[1]
+            else:
+                predictions, attention_weights = model_output, None
+
+            class_idx = int(np.argmax(predictions[0]))
+            predicted_class = CLASS_NAMES[class_idx]
+            confidence_score = float(predictions[0][class_idx]) * 100
+
+            st.markdown(
+                f'<div class="status-pill {STATUS_CLASSES[class_idx]}">'
+                f'{predicted_class} Fatigue ({confidence_score:.1f}% confidence)</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Render frame-level attention distribution if the model returns attention weights
+            if attention_weights is not None:
+                st.markdown("#### Temporal Attention Distribution")
+                attn_curve = attention_weights[0]
+                time_axis = np.linspace(0, 15.0, len(attn_curve))
+
+                fig_attn = go.Figure()
+                fig_attn.add_trace(
+                    go.Scatter(
+                        x=time_axis,
+                        y=attn_curve,
+                        mode="lines",
+                        line=dict(color="#2563EB", width=2),
+                        name="Attention Weight",
+                    )
+                )
+                fig_attn.update_layout(
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    xaxis_title="Time (seconds)",
+                    yaxis_title="Weight",
+                    height=200,
+                )
+                st.plotly_chart(fig_attn, use_container_width=True)
+
+        except Exception as exc:
+            st.error(f"Inference error: {exc}")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.subheader("Live session table")
